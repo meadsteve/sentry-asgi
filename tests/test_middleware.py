@@ -3,8 +3,9 @@ import random
 import sys
 
 import pytest
-from sentry_sdk import capture_message
+from sentry_sdk import Hub, capture_message
 from starlette.applications import Starlette
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import PlainTextResponse
 from starlette.testclient import TestClient
 
@@ -25,6 +26,24 @@ def app():
         capture_message("hi", level="error")
         return PlainTextResponse("ok")
 
+    app.add_middleware(SentryMiddleware)
+
+    return app
+
+
+@pytest.fixture
+def app_with_extra_middleware():
+    class _ExtraMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            sentry_hub: Hub = request.get("sentry_hub")
+            if sentry_hub:
+                with sentry_hub.configure_scope() as scope:
+                    scope.user = {"id": "expected_user_id"}
+            return await call_next(request)
+
+    app = Starlette()
+
+    app.add_middleware(_ExtraMiddleware)
     app.add_middleware(SentryMiddleware)
 
     return app
@@ -118,3 +137,21 @@ def test_errors(sentry_init, app, capture_events):
         frame["filename"].endswith("test_middleware.py")
         for frame in exception["stacktrace"]["frames"]
     )
+
+
+def test_sentry_hub_is_set_in_context(
+    sentry_init, app_with_extra_middleware, capture_events
+):
+    sentry_init()
+    events = capture_events()
+
+    @app_with_extra_middleware.route("/error")
+    def myerror(request):
+        raise ValueError("oh no")
+
+    client = TestClient(app_with_extra_middleware, raise_server_exceptions=False)
+    client.get("/error")
+
+    event, = events
+
+    assert event["user"]["id"] == "expected_user_id"

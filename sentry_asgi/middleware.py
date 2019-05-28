@@ -12,6 +12,7 @@ class SentryMiddleware:
     async def __call__(self, scope, receive, send):
         hub = sentry_sdk.Hub.current
         with sentry_sdk.Hub(hub) as hub:
+            scope["sentry_hub"] = hub
             with hub.configure_scope() as sentry_scope:
                 processor = functools.partial(self.event_processor, asgi_scope=scope)
                 sentry_scope.add_event_processor(processor)
